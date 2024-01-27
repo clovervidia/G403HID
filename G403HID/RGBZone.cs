@@ -14,8 +14,8 @@
 
         public RGBMode Mode;
         public Color RGBColor = new(0, 0, 255);
-        public byte[] EffectParameters = new byte[7];
-        public byte Animation = 2;
+        private byte[] EffectParameters = new byte[7];
+        private byte Animation = 2;
         public byte Intensity = 100;
         public ushort Period = 5000;
 

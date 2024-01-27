@@ -6,31 +6,40 @@ namespace G403HIDDemo
     {
         static void Main()
         {
-            var device = HID.FindDevice();
+            var devices = HID.FindDevices();
 
-            Console.WriteLine($"Name: {device.DeviceName}");
-            Console.WriteLine($"Protocol: {device.ProtocolVersion}");
-
-            Console.WriteLine("\nSupported Features:");
-            foreach ((Device.Feature feature, int index) item in device.FeatureTable.Select((feature, index) => (featureID: feature, index)))
+            foreach (var device in devices)
             {
-                Console.WriteLine($"{item.index:X2}: {item.feature:X} ({item.feature})");
-            }
+                Console.WriteLine($"Name: {device.DeviceName}");
+                Console.WriteLine($"Serial Number: {device.SerialNumber}");
+                Console.WriteLine($"Protocol: {device.ProtocolVersion}");
 
-            Console.WriteLine($"\nDPI: {device.CurrentDPI}");
-            Console.WriteLine($"{device.ButtonCount} buttons");
-            Console.WriteLine($"{device.ProfileCount} profile{(device.ProfileCount > 1 ? "s" : "")}");
+                Console.WriteLine("\nSupported Features:");
+                foreach ((Device.Feature feature, int index) item in device.FeatureTable.Select((feature, index) => (featureID: feature, index)))
+                {
+                    Console.WriteLine($"{item.index:X2}: {item.feature:X} ({item.feature})");
+                }
 
-            Console.WriteLine("\nRegular Button Mapping:");
-            foreach ((ButtonMapping button, int index) button in device.Config.MouseButtonMappings.Select((button, index) => (button, index)))
-            {
-                Console.WriteLine($"{button.index + 1}: {button.button}");
-            }
+                Console.WriteLine($"\nDPI: {device.CurrentDPI}");
+                Console.WriteLine($"{device.ButtonCount} buttons");
+                Console.WriteLine($"{device.ProfileCount} profile{(device.ProfileCount > 1 ? "s" : "")}");
 
-            Console.WriteLine("\nG Shift Button Mapping:");
-            foreach ((ButtonMapping button, int index) button in device.Config.MouseButtonGShiftMappings.Select((button, index) => (button, index)))
-            {
-                Console.WriteLine($"{button.index + 1}: {button.button}");
+                var currentProfileIndex = device.CurrentProfileIndex;
+                Console.WriteLine($"Current Profile: {currentProfileIndex}");
+
+                Console.WriteLine("\nRegular Button Mapping:");
+                foreach ((ButtonMapping button, int index) button in device.Profiles[currentProfileIndex - 1].MouseButtonMappings.Select((button, index) => (button, index)))
+                {
+                    Console.WriteLine($"{button.index + 1}: {button.button}");
+                }
+
+                Console.WriteLine("\nG Shift Button Mapping:");
+                foreach ((ButtonMapping button, int index) button in device.Profiles[currentProfileIndex - 1].MouseButtonGShiftMappings.Select((button, index) => (button, index)))
+                {
+                    Console.WriteLine($"{button.index + 1}: {button.button}");
+                }
+
+                Console.WriteLine("===");
             }
         }
     }

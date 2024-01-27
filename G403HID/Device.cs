@@ -8,16 +8,10 @@ namespace G403HID
         public HidDevice ShortEndpoint;
         public HidDevice LongEndpoint;
 
-        public Config Config;
-        public Config OriginalConfig;
+        public List<Profile> Profiles;
+        private List<Profile> OriginalProfiles;
 
-        private readonly byte FeatureSetIndex;
-        private readonly byte FirmwareInfoIndex;
-        private readonly byte DeviceNameTypeIndex;
-        private readonly byte AdjustableDPIIndex;
-        private readonly byte ReportRateIndex;
-        private readonly byte ColorLEDEffectsIndex;
-        private readonly byte OnboardProfileIndex;
+        public string SerialNumber = string.Empty;
 
         public enum Feature
         {
@@ -25,6 +19,7 @@ namespace G403HID
             FeatureSet = 1,
             FirmwareInfo = 3,
             DeviceNameType = 5,
+            DFUControlUnsigned = 0xC1,
             DFUControlSigned = 0xC2,
             DeviceReset = 0x1802,
             AdjustableDPI = 0x2201,
@@ -36,26 +31,34 @@ namespace G403HID
             MouseButtonSpy = 0x8110,
         }
 
-        public Device(HidDevice shortEndpoint, HidDevice longEndpoint)
+        public Device(HidDevice shortEndpoint, HidDevice longEndpoint, string serialNumber)
         {
             ShortEndpoint = shortEndpoint;
             LongEndpoint = longEndpoint;
 
-            FeatureSetIndex = GetFeature(Feature.FeatureSet);
-            FirmwareInfoIndex = GetFeature(Feature.FirmwareInfo);
-            DeviceNameTypeIndex = GetFeature(Feature.DeviceNameType);
-            OnboardProfileIndex = GetFeature(Feature.OnboardProfiles);
-            ReportRateIndex = GetFeature(Feature.ReportRate);
-            ColorLEDEffectsIndex = GetFeature(Feature.ColorLEDEffects);
-            AdjustableDPIIndex = GetFeature(Feature.AdjustableDPI);
+            GetProfileDetails();
+            GetFeatureTable();
 
-            Config = ReadConfig();
-            OriginalConfig = ReadConfig();
+            Profiles = ReadProfiles();
+            OriginalProfiles = ReadProfiles();
+            SerialNumber = serialNumber;
         }
 
         // Root Feature (0)
-        public byte GetFeature(int featureID)
+        public byte GetFeatureIndex(int featureID)
         {
+            if (FeatureTable.Count != 0)
+            {
+                var index = FeatureTable.IndexOf((Feature)featureID);
+
+                if (index == -1)
+                {
+                    throw new NotSupportedException($"Device does not support feature {(Feature)featureID} ({featureID:X4})");
+                }
+
+                return (byte)index;
+            }
+
             var shortEndpointStream = ShortEndpoint.Open();
             var longEndpointStream = LongEndpoint.Open();
 
@@ -70,9 +73,9 @@ namespace G403HID
             return response[4];
         }
 
-        public byte GetFeature(Feature feature)
+        public byte GetFeatureIndex(Feature feature)
         {
-            return GetFeature((int)feature);
+            return GetFeatureIndex((int)feature);
         }
 
         private (byte, byte) protocolVersion = (0xFF, 0xFF);
@@ -101,42 +104,39 @@ namespace G403HID
         }
 
         // Feature Set (1)
-        private List<Feature> featureTable = new();
-        public List<Feature> FeatureTable
+        public List<Feature> FeatureTable = new();
+        private List<Feature> GetFeatureTable()
         {
-            get
+            if (FeatureTable.Count != 0)
             {
-                if (this.featureTable.Count != 0)
-                {
-                    return this.featureTable;
-                }
-
-                var featureTable = new List<Feature>();
-
-                var shortEndpointStream = ShortEndpoint.Open();
-                var longEndpointStream = LongEndpoint.Open();
-
-                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, FeatureSetIndex, 0x0F, 0x00, 0x00, 0x00 });
-                var response = longEndpointStream.Read();
-
-                // The feature count doesn't include the root feature, so be sure to read one index further to get the last feature.
-                var featureCount = response[4];
-
-                for (byte featureIndex = 0; featureIndex < featureCount + 1; featureIndex++)
-                {
-                    shortEndpointStream.Write(new byte[] { 0x10, 0xFF, FeatureSetIndex, 0x1F, featureIndex, 0x00, 0x00 });
-                    response = longEndpointStream.Read();
-                    var featureIDBytes = response.Skip(4).Take(2).Reverse().ToArray();
-                    featureTable.Add((Feature)BitConverter.ToUInt16(featureIDBytes));
-                }
-
-                shortEndpointStream.Close();
-                longEndpointStream.Close();
-
-                this.featureTable = featureTable;
-
-                return featureTable;
+                return FeatureTable;
             }
+
+            var featureTable = new List<Feature>();
+
+            var shortEndpointStream = ShortEndpoint.Open();
+            var longEndpointStream = LongEndpoint.Open();
+
+            shortEndpointStream.Write(new byte[] { 0x10, 0xFF, 0x01, 0x0F, 0x00, 0x00, 0x00 });
+            var response = longEndpointStream.Read();
+
+            // The feature count doesn't include the root feature, so be sure to read one index further to get the last feature.
+            var featureCount = response[4];
+
+            for (byte featureIndex = 0; featureIndex < featureCount + 1; featureIndex++)
+            {
+                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, 0x01, 0x1F, featureIndex, 0x00, 0x00 });
+                response = longEndpointStream.Read();
+                var featureIDBytes = response.Skip(4).Take(2).Reverse().ToArray();
+                featureTable.Add((Feature)BitConverter.ToUInt16(featureIDBytes));
+            }
+
+            shortEndpointStream.Close();
+            longEndpointStream.Close();
+
+            FeatureTable = featureTable;
+
+            return featureTable;
         }
 
         // Device Name/Type (5)
@@ -150,19 +150,21 @@ namespace G403HID
                     return this.deviceName;
                 }
 
+                var deviceNameTypeIndex = GetFeatureIndex(Feature.DeviceNameType);
+
                 string deviceName = string.Empty;
 
                 var shortEndpointStream = ShortEndpoint.Open();
                 var longEndpointStream = LongEndpoint.Open();
 
-                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, DeviceNameTypeIndex, 0x0F, 0x00, 0x00, 0x00 });
+                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, deviceNameTypeIndex, 0x0F, 0x00, 0x00, 0x00 });
                 var response = longEndpointStream.Read();
 
                 var deviceNameLength = response[4];
 
                 while (deviceName.Length <= deviceNameLength)
                 {
-                    shortEndpointStream.Write(new byte[] { 0x10, 0xFF, DeviceNameTypeIndex, 0x1F, (byte)deviceName.Length, 0x00, 0x00 });
+                    shortEndpointStream.Write(new byte[] { 0x10, 0xFF, deviceNameTypeIndex, 0x1F, (byte)deviceName.Length, 0x00, 0x00 });
                     response = longEndpointStream.Read();
                     deviceName += Encoding.ASCII.GetString(response, 4, 16);
                 }
@@ -184,10 +186,12 @@ namespace G403HID
         {
             get
             {
+                var adjustableDPIIndex = GetFeatureIndex(Feature.AdjustableDPI);
+
                 var shortEndpointStream = ShortEndpoint.Open();
                 var longEndpointStream = LongEndpoint.Open();
 
-                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, AdjustableDPIIndex, 0x2F, 0x00, 0x00, 0x00 });
+                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, adjustableDPIIndex, 0x2F, 0x00, 0x00, 0x00 });
                 var response = longEndpointStream.Read();
 
                 shortEndpointStream.Close();
@@ -204,10 +208,12 @@ namespace G403HID
         {
             get
             {
+                var reportRateIndex = GetFeatureIndex(Feature.ReportRate);
+
                 var shortEndpointStream = ShortEndpoint.Open();
                 var longEndpointStream = LongEndpoint.Open();
 
-                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, ReportRateIndex, 0x0F, 0x00, 0x00, 0x00 });
+                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, reportRateIndex, 0x0F, 0x00, 0x00, 0x00 });
                 var response = longEndpointStream.Read();
 
                 shortEndpointStream.Close();
@@ -221,10 +227,12 @@ namespace G403HID
         {
             get
             {
+                var reportRateIndex = GetFeatureIndex(Feature.ReportRate);
+
                 var shortEndpointStream = ShortEndpoint.Open();
                 var longEndpointStream = LongEndpoint.Open();
 
-                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, ReportRateIndex, 0x1F, 0x00, 0x00, 0x00 });
+                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, reportRateIndex, 0x1F, 0x00, 0x00, 0x00 });
                 var response = longEndpointStream.Read();
 
                 shortEndpointStream.Close();
@@ -245,10 +253,12 @@ namespace G403HID
                     return ledCount;
                 }
 
+                var colorLEDEffectsIndex = GetFeatureIndex(Feature.ColorLEDEffects);
+
                 var shortEndpointStream = ShortEndpoint.Open();
                 var longEndpointStream = LongEndpoint.Open();
 
-                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, ColorLEDEffectsIndex, 0x0F, 0x00, 0x00, 0x00 });
+                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, colorLEDEffectsIndex, 0x0F, 0x00, 0x00, 0x00 });
                 var response = longEndpointStream.Read();
 
                 shortEndpointStream.Close();
@@ -261,66 +271,35 @@ namespace G403HID
         }
 
         // Onboard Profiles (0x8100)
-        private byte profileCount = 0xFF;
-        public byte ProfileCount
+        public byte ProfileCount = 0xFF;
+        public byte ButtonCount = 0xFF;
+        private void GetProfileDetails()
         {
-            get
-            {
-                if (profileCount != 0xFF)
-                {
-                    return profileCount;
-                }
+            var onboardProfileIndex = GetFeatureIndex(Feature.OnboardProfiles);
 
-                var shortEndpointStream = ShortEndpoint.Open();
-                var longEndpointStream = LongEndpoint.Open();
+            var shortEndpointStream = ShortEndpoint.Open();
+            var longEndpointStream = LongEndpoint.Open();
 
-                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, OnboardProfileIndex, 0x0F, 0x00, 0x00, 0x00 });
-                var response = longEndpointStream.Read();
+            shortEndpointStream.Write(new byte[] { 0x10, 0xFF, onboardProfileIndex, 0x0F, 0x00, 0x00, 0x00 });
+            var response = longEndpointStream.Read();
 
-                shortEndpointStream.Close();
-                longEndpointStream.Close();
+            shortEndpointStream.Close();
+            longEndpointStream.Close();
 
-                profileCount = response[7];
-                buttonCount = response[9];
-
-                return response[7];
-            }
-        }
-
-        private byte buttonCount = 0xFF;
-        public byte ButtonCount
-        {
-            get
-            {
-                if (buttonCount != 0xFF)
-                {
-                    return buttonCount;
-                }
-
-                var shortEndpointStream = ShortEndpoint.Open();
-                var longEndpointStream = LongEndpoint.Open();
-
-                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, OnboardProfileIndex, 0x0F, 0x00, 0x00, 0x00 });
-                var response = longEndpointStream.Read();
-
-                shortEndpointStream.Close();
-                longEndpointStream.Close();
-
-                profileCount = response[7];
-                buttonCount = response[9];
-
-                return response[9];
-            }
+            ProfileCount = response[7];
+            ButtonCount = response[9];
         }
 
         public byte CurrentProfileIndex
         {
             get
             {
+                var onboardProfileIndex = GetFeatureIndex(Feature.OnboardProfiles);
+
                 var shortEndpointStream = ShortEndpoint.Open();
                 var longEndpointStream = LongEndpoint.Open();
 
-                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, OnboardProfileIndex, 0x4F, 0x00, 0x00, 0x00 });
+                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, onboardProfileIndex, 0x4F, 0x00, 0x00, 0x00 });
                 var response = longEndpointStream.Read();
 
                 shortEndpointStream.Close();
@@ -328,17 +307,36 @@ namespace G403HID
 
                 return response[5];
             }
+            set
+            {
+                if (value == 0 || value > ProfileCount)
+                {
+                    return;
+                }
+
+                var onboardProfileIndex = GetFeatureIndex(Feature.OnboardProfiles);
+
+                var shortEndpointStream = ShortEndpoint.Open();
+                var longEndpointStream = LongEndpoint.Open();
+
+                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, onboardProfileIndex, 0x3F, 0x00, value, 0x00 });
+
+                shortEndpointStream.Close();
+                longEndpointStream.Close();
+            }
         }
 
         public byte OnboardMode
         {
             get
             {
+                var onboardProfileIndex = GetFeatureIndex(Feature.OnboardProfiles);
+
                 var shortEndpointStream = ShortEndpoint.Open();
                 var longEndpointStream = LongEndpoint.Open();
 
                 // Can be set with function 0x10
-                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, OnboardProfileIndex, 0x2F, 0x00, 0x00, 0x00 });
+                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, onboardProfileIndex, 0x2F, 0x00, 0x00, 0x00 });
                 var response = longEndpointStream.Read();
 
                 shortEndpointStream.Close();
@@ -348,59 +346,126 @@ namespace G403HID
             }
         }
 
-        public Config ReadConfig()
+        public List<byte> ReadMemoryPage(byte page)
         {
-            var configBytes = new List<byte>();
+            var onboardProfileIndex = GetFeatureIndex(Feature.OnboardProfiles);
+
+            var memoryBytes = new List<byte>();
 
             var shortEndpointStream = ShortEndpoint.Open();
             var longEndpointStream = LongEndpoint.Open();
 
-            var readConfigCommand = new byte[] { 0x11, 0xFF, OnboardProfileIndex, 0x5F, 0x00, 0x01, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-            for (int i = 0; i < 0x10; i++)
-            {
-                readConfigCommand[7] = (byte)(i * 16);
+            var readMemoryCommand = new byte[] { 0x11, 0xFF, onboardProfileIndex, 0x5F, 0x00, page, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 
-                longEndpointStream.Write(readConfigCommand);
-                configBytes.AddRange(longEndpointStream.Read().Skip(4));
+            for (int address = 0; address < 0x10; address++)
+            {
+                readMemoryCommand[7] = (byte)(address * 16);
+
+                longEndpointStream.Write(readMemoryCommand);
+                memoryBytes.AddRange(longEndpointStream.Read().Skip(4));
             }
 
             shortEndpointStream.Close();
             longEndpointStream.Close();
 
-            return Config.FromBytes(configBytes, ButtonCount);
+            return memoryBytes;
         }
 
-        public void WriteConfig()
+        public List<Profile> ReadProfiles()
         {
-            var configBytes = Config.ToBytes();
-            var originalConfigBytes = OriginalConfig.ToBytes();
+            var profiles = new List<Profile>();
 
-            // This is my implementation of OMM's "dirty" system. It will only write the config if changes have been made.
-            if (configBytes.SequenceEqual(originalConfigBytes))
+            for (byte profile = 1; profile <= ProfileCount; profile++)
             {
-                return;
+                profiles.Add(Profile.FromBytes(ReadMemoryPage(profile), ButtonCount));
             }
 
-            var configBytesWithHeaders = new List<byte>() { 0x11, 0xFF, OnboardProfileIndex, 0x6F, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+            return profiles;
+        }
 
-            foreach (var item in configBytes.Chunk(16))
-            {
-                configBytesWithHeaders.AddRange(new byte[] { 0x11, 0xFF, OnboardProfileIndex, 0x7F });
-                configBytesWithHeaders.AddRange(item);
-            }
+        public void WriteMemoryPage(byte page, List<byte> data)
+        {
+            var onboardProfileIndex = GetFeatureIndex(Feature.OnboardProfiles);
 
             var shortEndpointStream = ShortEndpoint.Open();
             var longEndpointStream = LongEndpoint.Open();
 
-            foreach (var message in configBytesWithHeaders.Chunk(20))
+            var dataWithHeaders = new List<byte>() { 0x11, 0xFF, onboardProfileIndex, 0x6F, 0x00, page, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+
+            if (data.Count is not 254 and not 256)
+            {
+                throw new ArgumentException("Data to be written to memory must be 254 or 256 bytes.");
+            }
+
+            if (data.Count == 256)
+            {
+                data.RemoveRange(254, 2);
+            }
+
+            data.AddRange(BitConverter.GetBytes(NullFX.CRC.Crc16.ComputeChecksum(NullFX.CRC.Crc16Algorithm.CcittInitialValue0xFFFF, data.ToArray())).Reverse());
+
+            foreach (var item in data.Chunk(16))
+            {
+                dataWithHeaders.AddRange(new byte[] { 0x11, 0xFF, onboardProfileIndex, 0x7F });
+                dataWithHeaders.AddRange(item);
+            }
+
+            foreach (var message in dataWithHeaders.Chunk(20))
             {
                 longEndpointStream.Write(message);
             }
 
-            shortEndpointStream.Write(new byte[] { 0x10, 0xFF, OnboardProfileIndex, 0x8F, 0x00, 0x00, 0x00 });
+            shortEndpointStream.Write(new byte[] { 0x10, 0xFF, onboardProfileIndex, 0x8F, 0x00, 0x00, 0x00 });
 
             shortEndpointStream.Close();
             longEndpointStream.Close();
+        }
+
+        public void WriteProfiles()
+        {
+            var profileBytes = Profiles.Select(p => p.ToBytes()).ToList();
+            var originalProfileBytes = OriginalProfiles.Select(p => p.ToBytes()).ToList();
+
+            // This is my implementation of OMM's "dirty" system. It will only update profiles that have been modified.
+            for (byte profile = 1; profile <= ProfileCount; profile++)
+            {
+                if (profileBytes[profile - 1].SequenceEqual(originalProfileBytes[profile - 1]))
+                {
+                    continue;
+                }
+
+                WriteMemoryPage(profile, profileBytes[profile - 1]);
+            }
+
+            Profiles = ReadProfiles();
+            OriginalProfiles = ReadProfiles();
+        }
+
+        public bool GetProfileVisibility(byte profileIndex)
+        {
+            if (profileIndex == 0 || profileIndex > ProfileCount)
+            {
+                return false;
+            }
+
+            var firstPage = ReadMemoryPage(0);
+
+            var offset = (profileIndex - 1) * 4 + 2;
+            return firstPage[offset] == 1;
+        }
+
+        public void SetProfileVisibility(byte profileIndex, bool visible)
+        {
+            if (profileIndex == 0 || profileIndex > ProfileCount)
+            {
+                return;
+            }
+
+            var firstPage = ReadMemoryPage(0);
+
+            var offset = (profileIndex - 1) * 4 + 2;
+            firstPage[offset] = (byte)(visible ? 1 : 0);
+            WriteMemoryPage(0, firstPage);
         }
     }
 }

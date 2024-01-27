@@ -2,13 +2,6 @@
 {
     public class ModifierKeypressMapping : ButtonMapping
     {
-        public enum ModifierSide
-        {
-            None,
-            Left,
-            Right,
-        }
-
         [Flags]
         public enum Modifier
         {
@@ -180,73 +173,6 @@
             this.rightShift = rightShift;
             this.rightAlt = rightAlt;
             this.rightGui = rightGui;
-
-            this.keyCode = keyCode;
-        }
-
-        public ModifierKeypressMapping(ModifierSide ctrl, ModifierSide shift, ModifierSide alt, ModifierSide gui, KeyCode keyCode)
-        {
-            switch (ctrl)
-            {
-                case ModifierSide.None:
-                    break;
-                case ModifierSide.Left:
-                    leftCtrl = true;
-                    break;
-                case ModifierSide.Right:
-                    rightCtrl = true;
-                    break;
-            }
-
-            switch (shift)
-            {
-                case ModifierSide.None:
-                    break;
-                case ModifierSide.Left:
-                    leftShift = true;
-                    break;
-                case ModifierSide.Right:
-                    rightShift = true;
-                    break;
-            }
-
-            switch (alt)
-            {
-                case ModifierSide.None:
-                    break;
-                case ModifierSide.Left:
-                    leftAlt = true;
-                    break;
-                case ModifierSide.Right:
-                    rightAlt = true;
-                    break;
-            }
-
-            switch (gui)
-            {
-                case ModifierSide.None:
-                    break;
-                case ModifierSide.Left:
-                    leftGui = true;
-                    break;
-                case ModifierSide.Right:
-                    rightGui = true;
-                    break;
-            }
-
-            this.keyCode = keyCode;
-        }
-
-        public ModifierKeypressMapping(Modifier modifiers, KeyCode keyCode)
-        {
-            leftCtrl = modifiers.HasFlag(Modifier.LeftCtrl);
-            leftShift = modifiers.HasFlag(Modifier.LeftShift);
-            leftAlt = modifiers.HasFlag(Modifier.LeftAlt);
-            leftGui = modifiers.HasFlag(Modifier.LeftGui);
-            rightCtrl = modifiers.HasFlag(Modifier.RightCtrl);
-            rightShift = modifiers.HasFlag(Modifier.RightShift);
-            rightAlt = modifiers.HasFlag(Modifier.RightAlt);
-            rightGui = modifiers.HasFlag(Modifier.RightGui);
 
             this.keyCode = keyCode;
         }

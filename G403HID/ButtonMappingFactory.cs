@@ -7,7 +7,7 @@
             switch (bytes[0])
             {
                 case 0x90:
-                case 0x80 when bytes[1] == 1 || bytes[1] == 3:
+                case 0x80 when bytes[1] is 1 or 3:
                 case 0xFF:
                     return new SimpleMapping(bytes);
                 case 0x80 when bytes[1] == 2:
