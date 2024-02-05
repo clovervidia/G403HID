@@ -134,6 +134,12 @@ Once you've made modifications to any of the profiles, you'll need to write them
 device.WriteProfiles();
 ```
 
+You can send your own HID++ commands to a `Device` with `SendCommand()`. Just pass in the report ID, device ID, feature index, function, and the data bytes to send. It'll return the response from the device. For example, this is how I get the count of entries in the feature table:
+
+```cs
+var response = SendCommand(0x10, 0xFF, 0x01, 0x0F, new() { 0x00, 0x00, 0x00 });
+```
+
 ## Acknowledgements
 
 I referenced a number of open source projects in order to understand how the HID++ protocol works, and without their efforts, it would've taken me much longer to get this project to a working state. I appreciate the work put in by the contributors of the following projects:

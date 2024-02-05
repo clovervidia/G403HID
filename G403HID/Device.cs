@@ -36,12 +36,45 @@ namespace G403HID
             ShortEndpoint = shortEndpoint;
             LongEndpoint = longEndpoint;
 
-            GetProfileDetails();
-            GetFeatureTable();
-
             Profiles = ReadProfiles();
             OriginalProfiles = ReadProfiles();
             SerialNumber = serialNumber;
+        }
+
+        public byte[] SendCommand(byte reportID, byte deviceID, byte featureIndex, byte function, List<byte> data)
+        {
+            if (reportID is not 0x10 and not 0x11)
+            {
+                throw new ArgumentException("Report ID must be 0x10 or 0x11.");
+            }
+
+            if ((reportID == 0x10 && data.Count != 3) || (reportID == 0x11 && data.Count != 16))
+            {
+                throw new ArgumentException("Data must be 3 bytes for report ID 0x10 or 16 bytes for report ID 0x11.");
+            }
+
+            var shortEndpointStream = ShortEndpoint.Open();
+            var longEndpointStream = LongEndpoint.Open();
+
+            List<byte> command = new() { reportID, deviceID, featureIndex, function };
+            command.AddRange(data);
+
+            switch (reportID)
+            {
+                case 0x10:
+                    shortEndpointStream.Write(command.ToArray());
+                    break;
+                case 0x11:
+                    longEndpointStream.Write(command.ToArray());
+                    break;
+            }
+
+            var response = longEndpointStream.Read();
+
+            shortEndpointStream.Close();
+            longEndpointStream.Close();
+
+            return response;
         }
 
         // Root Feature (0)
@@ -59,16 +92,9 @@ namespace G403HID
                 return (byte)index;
             }
 
-            var shortEndpointStream = ShortEndpoint.Open();
-            var longEndpointStream = LongEndpoint.Open();
-
             var featureIDBytes = BitConverter.GetBytes(featureID);
 
-            shortEndpointStream.Write(new byte[] { 0x10, 0xFF, 0x00, 0x0F, featureIDBytes[1], featureIDBytes[0], 0x00 });
-            var response = longEndpointStream.Read();
-
-            shortEndpointStream.Close();
-            longEndpointStream.Close();
+            var response = SendCommand(0x10, 0xFF, 0x00, 0x0F, new() { featureIDBytes[1], featureIDBytes[0], 0x00 });
 
             return response[4];
         }
@@ -88,14 +114,7 @@ namespace G403HID
                     return protocolVersion;
                 }
 
-                var shortEndpointStream = ShortEndpoint.Open();
-                var longEndpointStream = LongEndpoint.Open();
-
-                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, 0x00, 0x1F, 0x00, 0x00, 0x00 });
-                var response = longEndpointStream.Read();
-
-                shortEndpointStream.Close();
-                longEndpointStream.Close();
+                var response = SendCommand(0x10, 0xFF, 0x00, 0x1F, new() { 0x00, 0x00, 0x00 });
 
                 protocolVersion = (response[4], response[5]);
 
@@ -104,39 +123,34 @@ namespace G403HID
         }
 
         // Feature Set (1)
-        public List<Feature> FeatureTable = new();
-        private List<Feature> GetFeatureTable()
+        private List<Feature> featureTable = new();
+        public List<Feature> FeatureTable
         {
-            if (FeatureTable.Count != 0)
+            get
             {
-                return FeatureTable;
+                if (this.featureTable.Count != 0)
+                {
+                    return this.featureTable;
+                }
+
+                var featureTable = new List<Feature>();
+
+                var response = SendCommand(0x10, 0xFF, 0x01, 0x0F, new() { 0x00, 0x00, 0x00 });
+
+                // The feature count doesn't include the root feature, so be sure to read one index further to get the last feature.
+                var featureCount = response[4];
+
+                for (byte featureIndex = 0; featureIndex < featureCount + 1; featureIndex++)
+                {
+                    response = SendCommand(0x10, 0xFF, 0x01, 0x1F, new() { featureIndex, 0x00, 0x00 });
+                    var featureIDBytes = response.Skip(4).Take(2).Reverse().ToArray();
+                    featureTable.Add((Feature)BitConverter.ToUInt16(featureIDBytes));
+                }
+
+                this.featureTable = featureTable;
+
+                return featureTable;
             }
-
-            var featureTable = new List<Feature>();
-
-            var shortEndpointStream = ShortEndpoint.Open();
-            var longEndpointStream = LongEndpoint.Open();
-
-            shortEndpointStream.Write(new byte[] { 0x10, 0xFF, 0x01, 0x0F, 0x00, 0x00, 0x00 });
-            var response = longEndpointStream.Read();
-
-            // The feature count doesn't include the root feature, so be sure to read one index further to get the last feature.
-            var featureCount = response[4];
-
-            for (byte featureIndex = 0; featureIndex < featureCount + 1; featureIndex++)
-            {
-                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, 0x01, 0x1F, featureIndex, 0x00, 0x00 });
-                response = longEndpointStream.Read();
-                var featureIDBytes = response.Skip(4).Take(2).Reverse().ToArray();
-                featureTable.Add((Feature)BitConverter.ToUInt16(featureIDBytes));
-            }
-
-            shortEndpointStream.Close();
-            longEndpointStream.Close();
-
-            FeatureTable = featureTable;
-
-            return featureTable;
         }
 
         // Device Name/Type (5)
@@ -154,23 +168,14 @@ namespace G403HID
 
                 string deviceName = string.Empty;
 
-                var shortEndpointStream = ShortEndpoint.Open();
-                var longEndpointStream = LongEndpoint.Open();
-
-                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, deviceNameTypeIndex, 0x0F, 0x00, 0x00, 0x00 });
-                var response = longEndpointStream.Read();
-
+                var response = SendCommand(0x10, 0xFF, deviceNameTypeIndex, 0x0F, new() { 0x00, 0x00, 0x00 });
                 var deviceNameLength = response[4];
 
                 while (deviceName.Length <= deviceNameLength)
                 {
-                    shortEndpointStream.Write(new byte[] { 0x10, 0xFF, deviceNameTypeIndex, 0x1F, (byte)deviceName.Length, 0x00, 0x00 });
-                    response = longEndpointStream.Read();
+                    response = SendCommand(0x10, 0xFF, deviceNameTypeIndex, 0x1F, new() { (byte)deviceName.Length, 0x00, 0x00 });
                     deviceName += Encoding.ASCII.GetString(response, 4, 16);
                 }
-
-                shortEndpointStream.Close();
-                longEndpointStream.Close();
 
                 // Trim any trailing null bytes.
                 deviceName = deviceName[0..deviceNameLength];
@@ -188,14 +193,7 @@ namespace G403HID
             {
                 var adjustableDPIIndex = GetFeatureIndex(Feature.AdjustableDPI);
 
-                var shortEndpointStream = ShortEndpoint.Open();
-                var longEndpointStream = LongEndpoint.Open();
-
-                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, adjustableDPIIndex, 0x2F, 0x00, 0x00, 0x00 });
-                var response = longEndpointStream.Read();
-
-                shortEndpointStream.Close();
-                longEndpointStream.Close();
+                var response = SendCommand(0x10, 0xFF, adjustableDPIIndex, 0x2F, new() { 0x00, 0x00, 0x00 });
 
                 var currentDPI = BitConverter.ToInt16(response[5..7].Reverse().ToArray());
 
@@ -210,14 +208,7 @@ namespace G403HID
             {
                 var reportRateIndex = GetFeatureIndex(Feature.ReportRate);
 
-                var shortEndpointStream = ShortEndpoint.Open();
-                var longEndpointStream = LongEndpoint.Open();
-
-                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, reportRateIndex, 0x0F, 0x00, 0x00, 0x00 });
-                var response = longEndpointStream.Read();
-
-                shortEndpointStream.Close();
-                longEndpointStream.Close();
+                var response = SendCommand(0x10, 0xFF, reportRateIndex, 0x0F, new() { 0x00, 0x00, 0x00 });
 
                 return response[4];
             }
@@ -229,14 +220,7 @@ namespace G403HID
             {
                 var reportRateIndex = GetFeatureIndex(Feature.ReportRate);
 
-                var shortEndpointStream = ShortEndpoint.Open();
-                var longEndpointStream = LongEndpoint.Open();
-
-                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, reportRateIndex, 0x1F, 0x00, 0x00, 0x00 });
-                var response = longEndpointStream.Read();
-
-                shortEndpointStream.Close();
-                longEndpointStream.Close();
+                var response = SendCommand(0x10, 0xFF, reportRateIndex, 0x1F, new() { 0x00, 0x00, 0x00 });
 
                 return response[4];
             }
@@ -255,14 +239,7 @@ namespace G403HID
 
                 var colorLEDEffectsIndex = GetFeatureIndex(Feature.ColorLEDEffects);
 
-                var shortEndpointStream = ShortEndpoint.Open();
-                var longEndpointStream = LongEndpoint.Open();
-
-                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, colorLEDEffectsIndex, 0x0F, 0x00, 0x00, 0x00 });
-                var response = longEndpointStream.Read();
-
-                shortEndpointStream.Close();
-                longEndpointStream.Close();
+                var response = SendCommand(0x10, 0xFF, colorLEDEffectsIndex, 0x0F, new() { 0x00, 0x00, 0x00 });
 
                 ledCount = response[4];
 
@@ -271,23 +248,46 @@ namespace G403HID
         }
 
         // Onboard Profiles (0x8100)
-        public byte ProfileCount = 0xFF;
-        public byte ButtonCount = 0xFF;
-        private void GetProfileDetails()
+        private byte profileCount = 0xFF;
+        public byte ProfileCount
         {
-            var onboardProfileIndex = GetFeatureIndex(Feature.OnboardProfiles);
+            get
+            {
+                if (profileCount != 0xFF)
+                {
+                    return profileCount;
+                }
 
-            var shortEndpointStream = ShortEndpoint.Open();
-            var longEndpointStream = LongEndpoint.Open();
+                var onboardProfileIndex = GetFeatureIndex(Feature.OnboardProfiles);
 
-            shortEndpointStream.Write(new byte[] { 0x10, 0xFF, onboardProfileIndex, 0x0F, 0x00, 0x00, 0x00 });
-            var response = longEndpointStream.Read();
+                var response = SendCommand(0x10, 0xFF, onboardProfileIndex, 0x0F, new() { 0x00, 0x00, 0x00 });
 
-            shortEndpointStream.Close();
-            longEndpointStream.Close();
+                profileCount = response[7];
+                buttonCount = response[9];
 
-            ProfileCount = response[7];
-            ButtonCount = response[9];
+                return response[7];
+            }
+        }
+
+        private byte buttonCount = 0xFF;
+        public byte ButtonCount
+        {
+            get
+            {
+                if (buttonCount != 0xFF)
+                {
+                    return buttonCount;
+                }
+
+                var onboardProfileIndex = GetFeatureIndex(Feature.OnboardProfiles);
+
+                var response = SendCommand(0x10, 0xFF, onboardProfileIndex, 0x0F, new() { 0x00, 0x00, 0x00 });
+
+                profileCount = response[7];
+                buttonCount = response[9];
+
+                return response[9];
+            }
         }
 
         public byte CurrentProfileIndex
@@ -296,14 +296,7 @@ namespace G403HID
             {
                 var onboardProfileIndex = GetFeatureIndex(Feature.OnboardProfiles);
 
-                var shortEndpointStream = ShortEndpoint.Open();
-                var longEndpointStream = LongEndpoint.Open();
-
-                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, onboardProfileIndex, 0x4F, 0x00, 0x00, 0x00 });
-                var response = longEndpointStream.Read();
-
-                shortEndpointStream.Close();
-                longEndpointStream.Close();
+                var response = SendCommand(0x10, 0xFf, onboardProfileIndex, 0x4F, new() { 0x00, 0x00, 0x00 });
 
                 return response[5];
             }
@@ -316,13 +309,7 @@ namespace G403HID
 
                 var onboardProfileIndex = GetFeatureIndex(Feature.OnboardProfiles);
 
-                var shortEndpointStream = ShortEndpoint.Open();
-                var longEndpointStream = LongEndpoint.Open();
-
-                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, onboardProfileIndex, 0x3F, 0x00, value, 0x00 });
-
-                shortEndpointStream.Close();
-                longEndpointStream.Close();
+                SendCommand(0x10, 0xFF, onboardProfileIndex, 0x3F, new() { 0x00, value, 0x00 });
             }
         }
 
@@ -332,15 +319,8 @@ namespace G403HID
             {
                 var onboardProfileIndex = GetFeatureIndex(Feature.OnboardProfiles);
 
-                var shortEndpointStream = ShortEndpoint.Open();
-                var longEndpointStream = LongEndpoint.Open();
-
                 // Can be set with function 0x10
-                shortEndpointStream.Write(new byte[] { 0x10, 0xFF, onboardProfileIndex, 0x2F, 0x00, 0x00, 0x00 });
-                var response = longEndpointStream.Read();
-
-                shortEndpointStream.Close();
-                longEndpointStream.Close();
+                var response = SendCommand(0x10, 0xFF, onboardProfileIndex, 0x2F, new() { 0x00, 0x00, 0x00 });
 
                 return response[4];
             }
@@ -352,21 +332,15 @@ namespace G403HID
 
             var memoryBytes = new List<byte>();
 
-            var shortEndpointStream = ShortEndpoint.Open();
-            var longEndpointStream = LongEndpoint.Open();
-
-            var readMemoryCommand = new byte[] { 0x11, 0xFF, onboardProfileIndex, 0x5F, 0x00, page, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+            var readMemoryCommand = new List<byte> { 0x00, page, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 
             for (int address = 0; address < 0x10; address++)
             {
-                readMemoryCommand[7] = (byte)(address * 16);
+                readMemoryCommand[3] = (byte)(address * 16);
 
-                longEndpointStream.Write(readMemoryCommand);
-                memoryBytes.AddRange(longEndpointStream.Read().Skip(4));
+                var response = SendCommand(0x11, 0xFF, onboardProfileIndex, 0x5F, readMemoryCommand);
+                memoryBytes.AddRange(response.Skip(4));
             }
-
-            shortEndpointStream.Close();
-            longEndpointStream.Close();
 
             return memoryBytes;
         }
@@ -387,10 +361,7 @@ namespace G403HID
         {
             var onboardProfileIndex = GetFeatureIndex(Feature.OnboardProfiles);
 
-            var shortEndpointStream = ShortEndpoint.Open();
-            var longEndpointStream = LongEndpoint.Open();
-
-            var dataWithHeaders = new List<byte>() { 0x11, 0xFF, onboardProfileIndex, 0x6F, 0x00, page, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+            SendCommand(0x11, 0xFF, onboardProfileIndex, 0x6F, new() { 0x00, page, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 });
 
             if (data.Count is not 254 and not 256)
             {
@@ -404,21 +375,12 @@ namespace G403HID
 
             data.AddRange(BitConverter.GetBytes(NullFX.CRC.Crc16.ComputeChecksum(NullFX.CRC.Crc16Algorithm.CcittInitialValue0xFFFF, data.ToArray())).Reverse());
 
-            foreach (var item in data.Chunk(16))
+            foreach (var message in data.Chunk(16))
             {
-                dataWithHeaders.AddRange(new byte[] { 0x11, 0xFF, onboardProfileIndex, 0x7F });
-                dataWithHeaders.AddRange(item);
+                SendCommand(0x11, 0xFF, onboardProfileIndex, 0x7F, message.ToList());
             }
 
-            foreach (var message in dataWithHeaders.Chunk(20))
-            {
-                longEndpointStream.Write(message);
-            }
-
-            shortEndpointStream.Write(new byte[] { 0x10, 0xFF, onboardProfileIndex, 0x8F, 0x00, 0x00, 0x00 });
-
-            shortEndpointStream.Close();
-            longEndpointStream.Close();
+            SendCommand(0x10, 0xFF, onboardProfileIndex, 0x8F, new() { 0x00, 0x00, 0x00 });
         }
 
         public void WriteProfiles()
